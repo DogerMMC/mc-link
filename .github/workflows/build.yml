@@ -10,36 +10,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-macos:
-    runs-on: macos-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: 8
-
-      - name: Install Rust
-        uses: dtolnay/rust-action@stable
-        with:
-          profile: minimal
-
-      - name: Install dependencies
-        run: |
-          pnpm install
-
-      - name: Build Tauri
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   build-windows:
     runs-on: windows-latest
 
@@ -59,13 +29,109 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-action@stable
         with:
+          targets: aarch64-pc-windows-msvc
           profile: minimal
 
       - name: Install dependencies
         run: |
           pnpm install
 
-      - name: Build Tauri
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Windows x64
+        run: |
+          pnpm tauri build --target x86_64-pc-windows-msvc
+          mv src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi build/
+
+      - name: Build Windows arm64
+        run: |
+          pnpm tauri build --target aarch64-pc-windows-msvc
+          mv src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi build/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-link-windows
+          path: build/*.msi
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: aarch64-apple-darwin
+          profile: minimal
+
+      - name: Install dependencies
+        run: |
+          pnpm install
+
+      - name: Build macOS x64
+        run: |
+          pnpm tauri build --target x86_64-apple-darwin
+          mv src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg build/
+
+      - name: Build macOS arm64
+        run: |
+          pnpm tauri build --target aarch64-apple-darwin
+          mv src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg build/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-link-macos
+          path: build/*.dmg
+
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+          profile: minimal
+
+      - name: Install dependencies
+        run: |
+          pnpm install
+
+      - name: Build Linux x64
+        run: |
+          pnpm tauri build --target x86_64-unknown-linux-gnu
+          mv src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb build/
+
+      - name: Build Linux arm64
+        run: |
+          pnpm tauri build --target aarch64-unknown-linux-gnu
+          mv src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb build/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-link-linux
+          path: build/*.deb
