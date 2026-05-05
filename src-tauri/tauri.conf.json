@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "mc-link",
+  "version": "0.1.0",
+  "identifier": "com.cugo.mc-link",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "mc-link",
+        "width": 900,
+        "height": 650,
+        "decorations": false,
+        "transparent": true,
+        "center": true,
+        "resizable": true,
+        "minWidth": 700,
+        "minHeight": 500,
+        "windowEffects": {
+          "effects": ["acrylic", "hudWindow"]
+        }
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
