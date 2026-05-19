@@ -1,3 +1,15 @@
+# Rust build artifacts
+target/
+
+# Build output
+build/
+*.exe
+
+# Runtime config files
+central-server/config.yaml
+central-server/relays.json
+mc-link-relay/config.yml
+
 # Logs
 logs
 *.log

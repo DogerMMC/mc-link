@@ -7,6 +7,11 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 const currentMode = ref<"none" | "running">("none");
 const logs = ref<string[]>([]);
 let unlistenLog: UnlistenFn | null = null;
+let unlistenLatency: UnlistenFn | null = null;
+const latencyMs = ref(0);
+const roomName = ref("");
+const roomPassword = ref("");
+const isConnecting = ref(false);
 
 interface Toast {
   id: number;
@@ -19,13 +24,10 @@ let toastId = 0;
 
 function showToast(msg: string) {
   const isError = msg.includes('错误') || msg.includes('失败');
-
   if (toasts.value.length >= 3) {
     toasts.value.shift();
   }
-
   toasts.value.push({ id: ++toastId, msg, isError });
-
   setTimeout(() => {
     removeToast(toasts.value[0]?.id);
   }, 2000);
@@ -38,26 +40,27 @@ function removeToast(id: number) {
   }
 }
 
-const roomName = ref("");
-const roomPassword = ref("");
-const isConnecting = ref(false);
-const isRelayRunning = ref(false);
-const isWindowFocused = ref(true);
-
 onMounted(async () => {
   unlistenLog = await listen<string>("app-log", (event) => {
     logs.value.push(event.payload);
     if (logs.value.length > 200) logs.value.shift();
   });
 
+  unlistenLatency = await listen<number>("latency-update", (event) => {
+    latencyMs.value = event.payload;
+  });
+
   const appWindow = getCurrentWindow();
-  appWindow.onFocusChanged(({ payload: focused }) => {
-    isWindowFocused.value = focused;
+  appWindow.onCloseRequested(async (event) => {
+    event.preventDefault();
+    await invoke("close_window");
+    showToast("已最小化到系统托盘");
   });
 });
 
 onUnmounted(() => {
   if (unlistenLog) unlistenLog();
+  if (unlistenLatency) unlistenLatency();
 });
 
 async function handleMinimize() {
@@ -83,12 +86,8 @@ async function handleMaximize() {
 }
 
 async function handleClose() {
-  try {
-    const window = await getCurrentWindow();
-    await window.close();
-  } catch (error) {
-    console.error('Close error:', error);
-  }
+  await invoke("close_window");
+  showToast("已最小化到系统托盘");
 }
 
 async function startOnline() {
@@ -97,9 +96,16 @@ async function startOnline() {
     return;
   }
 
+  if (currentMode.value === "running" || isConnecting.value) {
+    showToast("联机功能已在运行中");
+    return;
+  }
+
   isConnecting.value = true;
+  currentMode.value = "running";
   toasts.value = [];
   logs.value = [];
+  latencyMs.value = 0;
 
   try {
     const result = await invoke("start_online", {
@@ -107,9 +113,9 @@ async function startOnline() {
       password: roomPassword.value
     });
     showToast(result as string);
-    currentMode.value = "running";
   } catch (e: any) {
     showToast(e.toString());
+    currentMode.value = "none";
   } finally {
     isConnecting.value = false;
   }
@@ -120,35 +126,47 @@ async function stopOnline() {
     await invoke("stop_online");
     showToast("联机已停止");
     currentMode.value = "none";
+    isConnecting.value = false;
     logs.value = [];
+    latencyMs.value = 0;
   } catch (e) {
     showToast("停止失败: " + e);
   }
 }
 
-async function toggleRelay() {
-  try {
-    if (!isRelayRunning.value) {
-      const result = await invoke("start_relay_mode");
-      showToast(result as string);
-      isRelayRunning.value = true;
-    } else {
-      const result = await invoke("stop_relay_mode");
-      showToast(result as string);
-      isRelayRunning.value = false;
-    }
-  } catch (e) {
-    showToast("中继服务器操作失败: " + e);
+async function copyLogs() {
+  if (logs.value.length === 0) {
+    showToast("没有日志可复制");
+    return;
   }
+  try {
+    await navigator.clipboard.writeText(logs.value.join("\n"));
+    showToast("日志已复制到剪贴板");
+  } catch (e) {
+    showToast("复制失败: " + e);
+  }
+}
+
+function latencyColor(ms: number): string {
+  if (ms === 0) return 'var(--text-muted)';
+  if (ms <= 50) return '#22c55e';
+  if (ms <= 100) return '#eab308';
+  if (ms <= 200) return '#f97316';
+  return '#ef4444';
+}
+
+function latencyLabel(ms: number): string {
+  if (ms === 0) return '-- ms';
+  if (ms >= 999) return '超时';
+  return `${ms} ms`;
 }
 </script>
 
 <template>
-  <div class="main-container" :class="{ unfocused: !isWindowFocused }">
-    <!-- 自定义顶栏 -->
-    <div class="titlebar">
-      <div class="titlebar-drag-region" data-tauri-drag-region>
-        MC-Link
+  <div class="main-container">
+    <div class="titlebar" data-tauri-drag-region>
+      <div class="titlebar-drag-region">
+        MC Link
       </div>
       <div class="window-controls">
         <button class="win-btn" @click="handleMinimize" title="最小化">
@@ -161,7 +179,7 @@ async function toggleRelay() {
             <rect x="2" y="2" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
           </svg>
         </button>
-        <button class="win-btn win-btn-close" @click="handleClose" title="关闭">
+        <button class="win-btn win-btn-close" @click="handleClose" title="关闭到托盘">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
             <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
           </svg>
@@ -169,13 +187,10 @@ async function toggleRelay() {
       </div>
     </div>
 
-    <!-- 主内容区 -->
     <div class="content">
-      <!-- 联机页面 -->
       <div class="page">
         <h1 class="page-title">Minecraft 联机</h1>
 
-        <!-- 未连接状态 -->
         <div v-if="currentMode === 'none'" class="form">
           <div class="input-group">
             <label>房间名</label>
@@ -194,18 +209,25 @@ async function toggleRelay() {
           </button>
         </div>
 
-        <!-- 已连接状态 -->
         <div v-else class="connected">
           <div class="info-card">
             <p><strong>房间:</strong> {{ roomName }}</p>
             <p><strong>状态:</strong> 联机中</p>
+            <p class="latency-row">
+              <strong>延迟:</strong>
+              <span class="latency-value" :style="{ color: latencyColor(latencyMs) }">
+                {{ latencyLabel(latencyMs) }}
+              </span>
+            </p>
           </div>
           <button class="btn btn-danger" @click="stopOnline">停止联机</button>
         </div>
 
-        <!-- 日志区域 -->
-        <div v-if="logs.length > 0" class="console">
-          <h3>运行日志</h3>
+        <div v-show="logs.length > 0" class="console">
+          <div class="console-header">
+            <h3>运行日志</h3>
+            <button class="copy-btn" @click="copyLogs">复制日志</button>
+          </div>
           <div class="logs">
             <div v-for="(log, i) in logs" :key="i" class="log-line">{{ log }}</div>
           </div>
@@ -213,7 +235,6 @@ async function toggleRelay() {
       </div>
     </div>
 
-    <!-- 消息提示 -->
     <div class="toast-container">
       <TransitionGroup name="toast">
         <div
@@ -236,7 +257,6 @@ async function toggleRelay() {
 
 :root {
   --bg-primary: #1e1e2e;
-  --bg-primary-rgb: 30, 30, 46;
   --bg-secondary: #28283e;
   --bg-tertiary: #31314a;
   --bg-card: rgba(40, 40, 62);
@@ -294,23 +314,6 @@ body {
   flex-direction: column;
   overflow: hidden;
   background: transparent;
-}
-
-.main-container.unfocused {
-  background: #1e1e2e;
-}
-
-.main-container.unfocused .titlebar {
-  background: #1e1e2e;
-}
-
-@media (prefers-color-scheme: light) {
-  .main-container.unfocused {
-    background: #f0f2f5;
-  }
-  .main-container.unfocused .titlebar {
-    background: #f0f2f5;
-  }
 }
 
 .titlebar {
@@ -373,10 +376,6 @@ body {
   color: white;
 }
 
-.win-btn:hover {
-  background: var(--bg-hover);
-}
-
 .content {
   flex: 1;
   display: flex;
@@ -397,11 +396,7 @@ body {
   font-weight: 600;
 }
 
-.form {
-  max-width: 400px;
-}
-
-.connected {
+.form, .connected {
   max-width: 400px;
 }
 
@@ -428,11 +423,6 @@ body {
   color: var(--text-primary);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   transition: all 0.2s ease;
-}
-
-.main-container.unfocused .input-group input {
-  background: var(--bg-secondary);
-  box-shadow: none;
 }
 
 .input-group input:focus {
@@ -462,38 +452,12 @@ body {
   border: none;
   background: rgba(255, 255, 255, 0.1);
   color: var(--text-primary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
 .btn:hover {
   background: rgba(255, 255, 255, 0.15);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-}
-
-.main-container.unfocused .btn {
-  background: var(--bg-tertiary);
-  box-shadow: none;
-}
-
-.main-container.unfocused .btn:hover {
-  background: var(--bg-hover);
-  box-shadow: none;
-}
-
-.main-container.unfocused .btn-primary {
-  background: var(--accent-primary);
-}
-
-.main-container.unfocused .btn-primary:hover {
-  filter: brightness(1.1);
-}
-
-.main-container.unfocused .btn-danger {
-  background: #ef4444;
-}
-
-.main-container.unfocused .btn-danger:hover {
-  filter: brightness(1.1);
 }
 
 .btn:active {
@@ -513,8 +477,6 @@ body {
 }
 
 .btn-primary:hover {
-  background: var(--accent-primary);
-  color: #ffffff;
   filter: brightness(1.1);
   box-shadow: 0 4px 12px rgba(129, 140, 248, 0.4);
 }
@@ -526,8 +488,6 @@ body {
 }
 
 .btn-danger:hover {
-  background: #ef4444;
-  color: #ffffff;
   filter: brightness(1.1);
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
 }
@@ -549,6 +509,19 @@ body {
   color: var(--text-primary);
 }
 
+.latency-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.latency-value {
+  font-weight: 600;
+  font-size: 14px;
+  font-family: 'Consolas', monospace;
+  transition: color 0.3s ease;
+}
+
 .console {
   margin-top: 30px;
   background: var(--bg-secondary);
@@ -557,13 +530,41 @@ body {
   border: 1px solid var(--border-color);
 }
 
-.console h3 {
-  margin: 0;
+.console-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 12px 15px;
   background: var(--bg-tertiary);
+}
+
+.console-header h3 {
+  margin: 0;
   color: var(--text-primary);
   font-size: 14px;
   font-weight: 600;
+}
+
+.copy-btn {
+  background: var(--accent-primary);
+  color: white;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.copy-btn:hover {
+  filter: brightness(1.1);
+}
+
+.log-line {
+  color: var(--text-secondary);
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border-color);
+  user-select: text;
 }
 
 .logs {
@@ -572,12 +573,6 @@ body {
   padding: 10px;
   font-family: 'Consolas', monospace;
   font-size: 12px;
-}
-
-.log-line {
-  color: var(--text-secondary);
-  padding: 2px 0;
-  border-bottom: 1px solid var(--border-color);
 }
 
 .toast-container {
@@ -602,12 +597,6 @@ body {
 
 .message.error {
   background: rgba(239, 68, 68, 0.2);
-}
-
-.main-container.unfocused .message {
-  background: var(--bg-card);
-  backdrop-filter: none;
-  box-shadow: none;
 }
 
 .toast-enter-active {

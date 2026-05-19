@@ -1,0 +1,6 @@
+central_server: central-server.link.xigo.top:50248
+relay_port: 57894
+report_address: null
+heartbeat_interval: 5
+latency_check_interval: 300
+bandwidth_limit_mbps: null

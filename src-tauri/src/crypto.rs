@@ -31,7 +31,7 @@ pub fn encrypt(data: &[u8], password: &str) -> Vec<u8> {
 }
 
 pub fn decrypt(data: &[u8], password: &str) -> Option<Vec<u8>> {
-    if data.len() % 16 != 0 {
+    if !data.len().is_multiple_of(16) {
         return None;
     }
     
@@ -58,6 +58,7 @@ pub fn decrypt(data: &[u8], password: &str) -> Option<Vec<u8>> {
 }
 
 // Simple XOR checksum for deduplication
+#[allow(dead_code)]
 pub fn calculate_checksum(data: &[u8]) -> u64 {
     let mut checksum: u64 = 0;
     for (i, &byte) in data.iter().enumerate() {
