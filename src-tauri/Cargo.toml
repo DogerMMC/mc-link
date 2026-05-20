@@ -1,6 +1,6 @@
 [package]
 name = "mc-link"
-version = "0.2.2"
+version = "0.2.8"
 description = "MC Link - 我的世界联机工具"
 authors = ["棱镜Prism工作室"]
 edition = "2021"

@@ -306,11 +306,19 @@ impl ClientMode {
 
     // 中继模式：本地→TCP中继
     fn local_to_tcp_relay(listener: TcpListener, relay_stream: Arc<Mutex<TcpStream>>, local_clients: Arc<Mutex<Vec<TcpStream>>>, running: Arc<Mutex<bool>>, room: String, password: String) {
+        let mut notified = false;
         while *running.lock().unwrap() {
             if let Ok((stream, _)) = listener.accept() {
                 println!("新本地TCP连接(中继模式)");
                 stream.set_nonblocking(false).ok();
                 local_clients.lock().unwrap().push(stream);
+                
+                if !notified {
+                    notified = true;
+                    let ready_packet = Self::pack_packet_static(&room, &password, b"MC_READY");
+                    write_packet(&mut relay_stream.lock().unwrap(), &ready_packet).ok();
+                    println!("已通知中继：Minecraft客户端已连接");
+                }
             }
 
             local_clients.lock().unwrap().retain_mut(|stream| {

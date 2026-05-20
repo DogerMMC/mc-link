@@ -5,15 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #1e1e2e; user-select: none; overflow: hidden; }
-.menu { background: #1e1e2e; padding: 4px 0; min-width: 170px; }
+body { user-select: none; overflow: hidden; }
+:root { --bg: #1e1e2e; --text: rgba(255,255,255,0.9); --hover: rgba(255,255,255,0.08); }
+@media (prefers-color-scheme: light) {
+  :root { --bg: #f0f0f0; --text: rgba(0,0,0,0.85); --hover: rgba(0,0,0,0.06); }
+}
+.menu { background: var(--bg); padding: 4px 0; min-width: 170px; }
 .item {
   width: 100%; border: none; background: transparent;
-  color: rgba(255, 255, 255, 0.9); padding: 6px 12px;
+  color: var(--text); padding: 6px 12px;
   font-size: 13px; display: flex; align-items: center; gap: 8px;
   cursor: pointer;
 }
-.item:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.item:hover:not(:disabled) { background: var(--hover); }
 .item:disabled { opacity: 0.35; cursor: default; }
 .icon { width: 14px; height: 14px; flex-shrink: 0; }
 </style>

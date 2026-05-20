@@ -154,7 +154,7 @@ impl HostMode {
         let relay_stream = self.relay_stream.clone().ok_or("请先调用 connect_and_register")?;
 
         self.log(format!("[启动] 房主模式，游戏端口: {}", game_port));
-        self.log("[等待] 等待第一个成员加入后连接Minecraft...".to_string());
+        self.log("[等待] 等待成员的Minecraft客户端连接后再连接Minecraft...".to_string());
 
         let relay_stream = relay_stream.lock().unwrap().try_clone().map_err(|e| e.to_string())?;
         relay_stream.set_read_timeout(Some(Duration::from_millis(50))).ok();
@@ -163,9 +163,11 @@ impl HostMode {
             match read_packet(&mut relay_stream.try_clone().unwrap()) {
                 Ok(packet) => {
                     if let Some(decrypted) = Self::try_decrypt_response_static(&packet, &self.password) {
-                        if &decrypted == b"MEMBER_JOIN" {
-                            self.log("[连接] 检测到成员加入，开始连接Minecraft...".to_string());
+                        if &decrypted == b"MC_READY" {
+                            self.log("[连接] 检测到成员的Minecraft已连接，开始连接Minecraft...".to_string());
                             break;
+                        } else if &decrypted == b"MEMBER_JOIN" {
+                            self.log("[提示] 成员已加入房间，等待其Minecraft客户端连接...".to_string());
                         }
                     }
                 }
@@ -176,7 +178,7 @@ impl HostMode {
                     continue;
                 }
                 Err(e) => {
-                    return Err(format!("等待成员加入时出错: {}", e));
+                    return Err(format!("等待成员连接时出错: {}", e));
                 }
             }
         };

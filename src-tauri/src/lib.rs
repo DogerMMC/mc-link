@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use host::HostMode;
 use client::ClientMode;
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 use serde::{Serialize, Deserialize};
 use tauri::Emitter;
@@ -369,6 +369,10 @@ async fn start_online(
     } else {
         window.emit("app-log", "成员模式: 连接到中继服务器...".to_string()).ok();
         let local_port = 25565u16;
+        // 自动寻找可用端口
+        let local_port = (local_port..65535).find(|&port| {
+            TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok()
+        }).unwrap_or(25565u16);
         let w = window.clone();
         let rn = room_name.clone();
         let pw = password.clone();
@@ -510,8 +514,12 @@ pub fn run() {
 
                 let alt_m = Shortcut::new(Some(Modifiers::ALT), Code::KeyM);
                 let alt_o = Shortcut::new(Some(Modifiers::ALT), Code::KeyO);
-                app.global_shortcut().register(alt_m)?;
-                app.global_shortcut().register(alt_o)?;
+                if let Err(e) = app.global_shortcut().register(alt_m) {
+                    eprintln!("[热键] ALT+M 注册失败(可能已被其他程序占用): {}", e);
+                }
+                if let Err(e) = app.global_shortcut().register(alt_o) {
+                    eprintln!("[热键] ALT+O 注册失败(可能已被其他程序占用): {}", e);
+                }
             }
 
             Ok(())

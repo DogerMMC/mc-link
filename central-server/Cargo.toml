@@ -1,0 +1,12 @@
+[package]
+name = "mc-link-central"
+version = "0.2.0"
+edition = "2024"
+authors = ["棱镜Prism工作室"]
+description = "MC Link 中央服务器 - 中继协调与房间管理"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
