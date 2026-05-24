@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, Shutdown};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -674,12 +674,29 @@ fn handle_client(mut stream: TcpStream, state: Arc<RelayState>, addr: SocketAddr
         let _ = state.clients.lock().unwrap().remove(&addr_str);
     }
     if let Some(room_name) = host_room {
-        let mut rooms = state.rooms.lock().unwrap();
-        if let Some(room_info) = rooms.get(&room_name) {
-            if room_info.host_addr == addr {
-                rooms.remove(&room_name);
-                log(LogLevel::Info, &format!("[房间/注销] 房主断开，房间 {} 已注销", room_name));
+        let is_host = {
+            let rooms = state.rooms.lock().unwrap();
+            rooms.get(&room_name).map(|r| r.host_addr == addr).unwrap_or(false)
+        };
+        if is_host {
+            let member_count;
+            {
+                let clients = state.clients.lock().unwrap();
+                let member_addrs: Vec<String> = clients.keys()
+                    .filter(|ca| **ca != addr_str)
+                    .cloned()
+                    .collect();
+                member_count = member_addrs.len();
+                for ca in &member_addrs {
+                    if let Some(stream_arc) = clients.get(ca) {
+                        if let Ok(s) = stream_arc.lock() {
+                            let _ = s.shutdown(Shutdown::Both);
+                        }
+                    }
+                }
             }
+            state.rooms.lock().unwrap().remove(&room_name);
+            log(LogLevel::Info, &format!("[房间/注销] 房间 {} 已注销，{} 个成员连接已关闭", room_name, member_count));
         }
     }
 }

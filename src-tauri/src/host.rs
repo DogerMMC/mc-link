@@ -155,7 +155,7 @@ impl HostMode {
             })
             .ok();
 
-        let ss = stop_signal;
+        let ss = stop_signal.clone();
         let relay_writer = relay_for_write.clone();
         let mc_for_write = mc_stream.clone();
         let mc_conn_for_write = mc_connected.clone();
@@ -169,7 +169,11 @@ impl HostMode {
             })
             .ok();
 
-        Ok(format!("房主模式已启动\n等待成员加入后连接Minecraft\n房间: {}", self.room))
+        while !stop_signal.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        Ok(format!("房主模式已结束"))
     }
 
     fn mc_to_tcp_relay(mc_stream: Arc<Mutex<Option<TcpStream>>>, relay_stream: Arc<Mutex<TcpStream>>, mc_connected: Arc<AtomicBool>, stop_signal: Arc<AtomicBool>, room: String, password: String, _log_callback: Arc<Mutex<Option<Box<dyn Fn(String) + Send>>>>) {
@@ -210,6 +214,7 @@ impl HostMode {
 
                 let packet = protocol::pack_packet(&room, &password, &payload);
                 if protocol::write_packet(&mut relay_stream.lock().unwrap(), &packet).is_err() {
+                    stop_signal.store(true, Ordering::SeqCst);
                     break;
                 }
             } else {
@@ -237,14 +242,14 @@ impl HostMode {
             let packet = {
                 let mut relay = match relay_stream.lock() {
                     Ok(r) => r,
-                    Err(_) => break,
+                    Err(_) => { stop_signal.store(true, Ordering::SeqCst); break; },
                 };
                 match protocol::read_packet(&mut relay) {
                     Ok(p) => p,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
                         continue;
                     }
-                    Err(_) => break,
+                    Err(_) => { stop_signal.store(true, Ordering::SeqCst); break; },
                 }
             };
 
@@ -275,6 +280,7 @@ impl HostMode {
                         log("[启动] 已连接到Minecraft服务器".to_string());
                         if stream.write(data).is_err() {
                             log("[错误] 写入Minecraft失败".to_string());
+                            stop_signal.store(true, Ordering::SeqCst);
                             break;
                         }
                         stream.flush().ok();
@@ -284,6 +290,7 @@ impl HostMode {
                     }
                     Err(e) => {
                         log(format!("[错误] 连接Minecraft失败: {}", e));
+                        stop_signal.store(true, Ordering::SeqCst);
                         break;
                     }
                 }
@@ -305,6 +312,7 @@ impl HostMode {
             };
 
             if !mc_write_ok {
+                stop_signal.store(true, Ordering::SeqCst);
                 break;
             }
         }

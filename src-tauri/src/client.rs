@@ -139,7 +139,7 @@ impl ClientMode {
             })
             .map_err(|e| format!("启动中继→本地转发线程失败: {}", e))?;
 
-        let ss = stop_signal;
+        let ss = stop_signal.clone();
         let relay_stream_clone = relay_writer.clone();
         let local_clients_clone = local_clients.clone();
         let room_clone = self.room.clone();
@@ -151,7 +151,11 @@ impl ClientMode {
             })
             .map_err(|e| format!("启动本地→中继转发线程失败: {}", e))?;
 
-        Ok(format!("成员模式已启动，本地端口: {}, 房间: {}", local_port, self.room))
+        while !stop_signal.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        Ok(format!("成员模式已结束"))
     }
 
     fn start_lan_broadcast(running: Arc<Mutex<bool>>, motd: String, port: u16) {
@@ -194,6 +198,7 @@ impl ClientMode {
                                         {
                                             let mut relay_guard = relay.lock().unwrap();
                                             if protocol::write_packet(&mut relay_guard, &packet).is_err() {
+                                                ss.store(true, Ordering::SeqCst);
                                                 break;
                                             }
                                             relay_guard.flush().ok();
@@ -210,6 +215,8 @@ impl ClientMode {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => {
                     Self::log_debug(format!("accept失败: {}", e));
+                    stop_signal.store(true, Ordering::SeqCst);
+                    break;
                 }
             }
             thread::sleep(Duration::from_millis(10));
@@ -223,7 +230,7 @@ impl ClientMode {
             let packet = {
                 let mut relay = match relay_stream.lock() {
                     Ok(r) => r,
-                    Err(_) => break,
+                    Err(_) => { stop_signal.store(true, Ordering::SeqCst); break; },
                 };
                 match protocol::read_packet(&mut relay) {
                     Ok(p) => p,
@@ -232,6 +239,7 @@ impl ClientMode {
                     }
                     Err(e) => {
                         Self::log_debug(format!("从中继读取失败: {}", e));
+                        stop_signal.store(true, Ordering::SeqCst);
                         break;
                     }
                 }

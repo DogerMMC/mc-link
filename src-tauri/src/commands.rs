@@ -149,7 +149,6 @@ pub(crate) async fn start_online(
 
         let w = window.clone();
         let rn = room_name.clone();
-        let pw = password.clone();
         let is_running_for_thread = is_running.clone();
         let current_room_for_thread = current_room.clone();
 
@@ -157,18 +156,14 @@ pub(crate) async fn start_online(
         thread::Builder::new()
             .name("host-mode-worker".into())
             .spawn(move || {
-                match host_mode.start(mc_port, mc_motd, ss) {
-                    Ok(msg) => {
-                        let _ = w.emit("app-log", msg);
-                        *is_running_for_thread.lock().unwrap() = true;
-                        *current_room_for_thread.lock().unwrap() = Some((rn, pw));
-                    }
-                    Err(e) => {
-                        let _ = w.emit("app-log", format!("[错误] {}", e));
-                        central::delete_room(&rn);
-                        *is_running_for_thread.lock().unwrap() = false;
-                    }
+                let result = host_mode.start(mc_port, mc_motd, ss);
+                match &result {
+                    Ok(msg) => { let _ = w.emit("app-log", msg); }
+                    Err(e) => { let _ = w.emit("app-log", format!("[结束] {}", e)); }
                 }
+                central::delete_room(&rn);
+                *is_running_for_thread.lock().unwrap() = false;
+                *current_room_for_thread.lock().unwrap() = None;
             })
             .ok();
 
@@ -197,18 +192,13 @@ pub(crate) async fn start_online(
                 client_mode.set_log_callback(move |msg| {
                     let _ = w2.emit("app-log", msg);
                 });
-                match client_mode.start(ss) {
-                    Ok(msg) => {
-                        let _ = w.emit("app-log", msg);
-                        *is_running_for_thread.lock().unwrap() = true;
-                        *current_room_for_thread.lock().unwrap() = Some((rn, pw));
-                    }
-                    Err(e) => {
-                        let _ = w.emit("app-log", format!("[错误] {}", e));
-                        central::delete_room(&rn);
-                        *is_running_for_thread.lock().unwrap() = false;
-                    }
+                let result = client_mode.start(ss);
+                match &result {
+                    Ok(msg) => { let _ = w.emit("app-log", msg); }
+                    Err(e) => { let _ = w.emit("app-log", format!("[结束] {}", e)); }
                 }
+                *is_running_for_thread.lock().unwrap() = false;
+                *current_room_for_thread.lock().unwrap() = None;
             })
             .ok();
 
