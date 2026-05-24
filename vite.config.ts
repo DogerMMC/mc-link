@@ -16,6 +16,8 @@ export default defineConfig(async () => ({
   },
 
   clearScreen: false,
+
+  assetsInclude: ["**/*.woff", "**/*.woff2"],
   
   server: {
     port: 1420,

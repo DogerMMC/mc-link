@@ -1,6 +1,6 @@
 [package]
 name = "mc-link"
-version = "0.2.8"
+version = "0.2.16"
 description = "MC Link - 我的世界联机工具"
 authors = ["棱镜Prism工作室"]
 edition = "2021"
@@ -25,3 +25,5 @@ rand = "0.8"
 uuid = { version = "1.0", features = ["v4"] }
 chrono = "0.4"
 raw-window-handle = "0.6"
+uapi-sdk-rust = "0.1.15"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -55,4 +55,10 @@ if (fs.existsSync(exePath)) {
     console.log(`已复制: mc-link.exe -> mc-link-v${version}.exe`);
 }
 
-console.log('重命名完成!');
+console.log('');
+console.log('========================================');
+console.log('  MC-Link 构建完成!');
+console.log('  版本: ' + version);
+console.log('  路径: src-tauri/target/release/');
+console.log('========================================');
+console.log('');

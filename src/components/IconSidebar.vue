@@ -34,32 +34,79 @@ const pressedIconId = ref<string | null>(null);
 <style scoped>
 .icon-sidebar {
   width: 60px;
-  background: rgba(30, 30, 46, 0.08);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
   display: flex;
   flex-direction: column;
   align-items: center;
   padding: 10px 0;
   gap: 8px;
   -webkit-app-region: no-drag;
-  transition: background 0.3s ease;
-  border-right: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.sidebar-icon-item {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 18px;
+  color: rgba(255, 255, 255, 0.45);
+  position: relative;
+}
+
+.sidebar-icon-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.sidebar-icon-item.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.sidebar-icon-item.active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  background: var(--accent-primary);
+  border-radius: 0 3px 3px 0;
+}
+
+.sidebar-icon-item.clickable-active {
+  transform: scale(0.93);
 }
 
 @media (prefers-color-scheme: light) {
-  .icon-sidebar {
-    background: rgba(255, 255, 255, 0.2);
-    border-right: 1px solid rgba(255, 255, 255, 0.12);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
+  .sidebar-icon-item {
+    color: rgba(0, 0, 0, 0.4);
+  }
+  .sidebar-icon-item:hover {
+    background: rgba(0, 0, 0, 0.06);
+    color: rgba(0, 0, 0, 0.75);
+  }
+  .sidebar-icon-item.active {
+    background: rgba(0, 0, 0, 0.08);
+    color: #000;
   }
 }
 
-[data-theme="light"] .icon-sidebar {
-  background: rgba(255, 255, 255, 0.2);
-  border-right: 1px solid rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+[data-theme="light"] .sidebar-icon-item {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="light"] .sidebar-icon-item:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: rgba(0, 0, 0, 0.75);
+}
+
+[data-theme="light"] .sidebar-icon-item.active {
+  background: rgba(0, 0, 0, 0.08);
+  color: #000;
 }
 </style>

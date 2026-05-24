@@ -1,35 +1,10 @@
-use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::net::{SocketAddr, TcpStream, Shutdown};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
-use std::collections::HashMap;
-use crate::crypto;
-
-const MULTICAST_IP: &str = "224.0.2.60";
-const MULTICAST_PORT: u16 = 4445;
-
-fn read_packet(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf)?;
-    Ok(buf)
-}
-
-fn write_packet(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
-    let len_buf = (data.len() as u32).to_be_bytes();
-    stream.write_all(&len_buf)?;
-    stream.write_all(data)?;
-    Ok(())
-}
-
-#[derive(Clone, Debug)]
-pub struct LanServer {
-    pub motd: String,
-    pub port: u16,
-}
+use crate::protocol;
 
 pub struct HostMode {
     running: Arc<Mutex<bool>>,
@@ -95,16 +70,11 @@ impl HostMode {
     }
 
     fn pack_packet(&self, data: &[u8]) -> Vec<u8> {
-        let encrypted = crypto::encrypt(data, &self.password);
-        
-        let mut packet = Vec::new();
-        packet.push(self.room.len() as u8);
-        packet.extend_from_slice(self.room.as_bytes());
-        packet.push(self.password.len() as u8);
-        packet.extend_from_slice(self.password.as_bytes());
-        packet.extend_from_slice(&encrypted);
-        
-        packet
+        protocol::pack_packet(&self.room, &self.password, data)
+    }
+
+    fn try_decrypt_response(&self, data: &[u8]) -> Option<Vec<u8>> {
+        protocol::try_decrypt_response(data, &self.password)
     }
 
     pub fn connect_and_register(&mut self) -> Result<(), String> {
@@ -112,15 +82,17 @@ impl HostMode {
 
         self.log(format!("[启动] 连接中继服务器: {}", relay_addr));
         let relay_stream = TcpStream::connect(relay_addr).map_err(|e| format!("连接中继服务器失败: {}", e))?;
+        relay_stream.set_nodelay(true).ok();
         self.log("[启动] 已连接到中继服务器".to_string());
 
         self.log("[启动] 向中继服务器注册...".to_string());
         let reg_packet = self.pack_packet(b"REGH");
         let mut stream_clone = relay_stream.try_clone().map_err(|e| e.to_string())?;
-        write_packet(&mut stream_clone, &reg_packet).map_err(|e| format!("注册失败: {}", e))?;
+        stream_clone.set_nodelay(true).ok();
+        protocol::write_packet(&mut stream_clone, &reg_packet).map_err(|e| format!("注册失败: {}", e))?;
 
         stream_clone.set_read_timeout(Some(Duration::from_secs(5))).ok();
-        match read_packet(&mut stream_clone) {
+        match protocol::read_packet(&mut stream_clone) {
             Ok(packet) => {
                 if let Some(decrypted) = self.try_decrypt_response(&packet) {
                     if &decrypted == b"REGH_OK" {
@@ -139,12 +111,11 @@ impl HostMode {
             }
         }
 
-        stream_clone.set_read_timeout(Some(Duration::from_millis(100))).ok();
         self.relay_stream = Some(Arc::new(Mutex::new(relay_stream)));
         Ok(())
     }
 
-    pub fn start(&mut self, selected_game_port: u16, motd: String) -> Result<String, String> {
+    pub fn start(&mut self, selected_game_port: u16, motd: String, stop_signal: Arc<AtomicBool>) -> Result<String, String> {
         self.game_port = selected_game_port;
         self.motd = motd;
         let running = self.running.clone();
@@ -154,297 +125,202 @@ impl HostMode {
         let relay_stream = self.relay_stream.clone().ok_or("请先调用 connect_and_register")?;
 
         self.log(format!("[启动] 房主模式，游戏端口: {}", game_port));
-        self.log("[等待] 等待成员的Minecraft客户端连接后再连接Minecraft...".to_string());
 
         let relay_stream = relay_stream.lock().unwrap().try_clone().map_err(|e| e.to_string())?;
-        relay_stream.set_read_timeout(Some(Duration::from_millis(50))).ok();
-
-        loop {
-            match read_packet(&mut relay_stream.try_clone().unwrap()) {
-                Ok(packet) => {
-                    if let Some(decrypted) = Self::try_decrypt_response_static(&packet, &self.password) {
-                        if &decrypted == b"MC_READY" {
-                            self.log("[连接] 检测到成员的Minecraft已连接，开始连接Minecraft...".to_string());
-                            break;
-                        } else if &decrypted == b"MEMBER_JOIN" {
-                            self.log("[提示] 成员已加入房间，等待其Minecraft客户端连接...".to_string());
-                        }
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if !*running.lock().unwrap() {
-                        return Err("联机已停止".to_string());
-                    }
-                    continue;
-                }
-                Err(e) => {
-                    return Err(format!("等待成员连接时出错: {}", e));
-                }
-            }
-        };
-
-        let mc_addr = format!("127.0.0.1:{}", game_port);
-        self.log(format!("[启动] 连接到Minecraft: {}", mc_addr));
-
-        let mc_stream = TcpStream::connect(&mc_addr)
-            .map_err(|e| format!("连接Minecraft失败: {}，请确保Minecraft世界已开放局域网", e))?;
-
-        self.log("[启动] 已连接到Minecraft服务器".to_string());
-        mc_stream.set_read_timeout(Some(Duration::from_millis(50))).ok();
-        let mc_stream = Arc::new(Mutex::new(mc_stream));
+        relay_stream.set_nodelay(true).ok();
 
         let relay_for_read = relay_stream.try_clone().map_err(|e| e.to_string())?;
-        relay_for_read.set_read_timeout(Some(Duration::from_millis(50))).ok();
+        relay_for_read.set_nodelay(true).ok();
+        relay_for_read.set_read_timeout(Some(Duration::from_millis(200))).ok();
         let relay_for_read = Arc::new(Mutex::new(relay_for_read));
 
-        let relay_for_write = Arc::new(Mutex::new(relay_stream));
+        let relay_for_write = relay_stream;
+        let relay_for_write = Arc::new(Mutex::new(relay_for_write));
 
-        let running_clone = running.clone();
+        let mc_stream: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
+        let mc_connected = Arc::new(AtomicBool::new(false));
+
+        let ss = stop_signal.clone();
         let relay_reader = relay_for_read.clone();
-        let mc_clone = mc_stream.clone();
+        let mc_for_read = mc_stream.clone();
+        let mc_conn = mc_connected.clone();
         let room = self.room.clone();
         let password = self.password.clone();
         let log_callback = self.log_callback.clone();
         let test_callback = self.test_callback.clone();
-        thread::spawn(move || {
-            Self::tcp_to_mc_relay(relay_reader, mc_clone, running_clone, room, password, log_callback, test_callback);
-        });
+        thread::Builder::new()
+            .name("host-relay-to-mc".into())
+            .spawn(move || {
+                Self::tcp_to_mc_relay(relay_reader, mc_for_read, mc_conn, ss, game_port, room, password, log_callback, test_callback);
+            })
+            .ok();
 
-        let running_clone = running.clone();
+        let ss = stop_signal;
         let relay_writer = relay_for_write.clone();
-        let mc_clone = mc_stream.clone();
+        let mc_for_write = mc_stream.clone();
+        let mc_conn_for_write = mc_connected.clone();
         let room = self.room.clone();
         let password = self.password.clone();
         let log_callback = self.log_callback.clone();
-        thread::spawn(move || {
-            Self::mc_to_tcp_relay(mc_clone, relay_writer, running_clone, room, password, log_callback);
-        });
+        thread::Builder::new()
+            .name("host-mc-to-relay".into())
+            .spawn(move || {
+                Self::mc_to_tcp_relay(mc_for_write, relay_writer, mc_conn_for_write, ss, room, password, log_callback);
+            })
+            .ok();
 
         Ok(format!("房主模式已启动\n等待成员加入后连接Minecraft\n房间: {}", self.room))
     }
 
-    pub fn scan_lan_servers(&self) -> Result<Vec<LanServer>, String> {
-        // 创建UDP socket监听局域网发现
-        let socket = UdpSocket::bind(format!("0.0.0.0:{}", MULTICAST_PORT))
-            .map_err(|e| format!("绑定失败: {}", e))?;
-        
-        socket.join_multicast_v4(
-            &MULTICAST_IP.parse().unwrap(),
-            &"0.0.0.0".parse().unwrap()
-        ).map_err(|e| e.to_string())?;
+    fn mc_to_tcp_relay(mc_stream: Arc<Mutex<Option<TcpStream>>>, relay_stream: Arc<Mutex<TcpStream>>, mc_connected: Arc<AtomicBool>, stop_signal: Arc<AtomicBool>, room: String, password: String, _log_callback: Arc<Mutex<Option<Box<dyn Fn(String) + Send>>>>) {
 
-        socket.set_read_timeout(Some(Duration::from_secs(3))).ok();
+        while !mc_connected.load(Ordering::Relaxed) && !stop_signal.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if stop_signal.load(Ordering::Relaxed) {
+            return;
+        }
 
-        let mut servers: HashMap<u16, LanServer> = HashMap::new();
-        let mut buf = [0u8; 1024];
-
-        // 监听3秒收集服务器
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(3) {
-            if let Ok((len, _)) = socket.recv_from(&mut buf) {
-                if let Ok(data) = String::from_utf8(buf[..len].to_vec()) {
-                    if data.contains("[MOTD]") && data.contains("[AD]") {
-                        let motd = Self::extract_tag(&data, "[MOTD]", "[/MOTD]");
-                        let port_str = Self::extract_tag(&data, "[AD]", "[/AD]");
-                        if let Ok(port) = port_str.parse::<u16>() {
-                            servers.insert(port, LanServer { motd, port });
-                        }
-                    }
+        while !stop_signal.load(Ordering::Relaxed) {
+            let mc_data = {
+                let guard = mc_stream.lock().unwrap();
+                let stream = match guard.as_ref() {
+                    Some(s) => s,
+                    None => break,
+                };
+                let mut buf = [0u8; 4096];
+                let mut mc = match stream.try_clone() {
+                    Ok(mc) => mc,
+                    Err(_) => break,
+                };
+                mc.set_nodelay(true).ok();
+                mc.set_read_timeout(Some(Duration::from_millis(10))).ok();
+                match mc.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => Some(buf[..n].to_vec()),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => None,
+                    Err(_) => break,
                 }
+            };
+
+            if let Some(data) = mc_data {
+                let mut payload = Vec::with_capacity(4 + data.len());
+                payload.extend_from_slice(b"DATA");
+                payload.extend_from_slice(&data);
+
+                let packet = protocol::pack_packet(&room, &password, &payload);
+                if protocol::write_packet(&mut relay_stream.lock().unwrap(), &packet).is_err() {
+                    break;
+                }
+            } else {
+                thread::sleep(Duration::from_millis(1));
             }
         }
 
-        Ok(servers.into_values().collect())
+        if let Some(stream) = mc_stream.lock().unwrap().take() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+        mc_connected.store(false, Ordering::SeqCst);
     }
 
-    fn try_decrypt_response(&self, data: &[u8]) -> Option<Vec<u8>> {
-        if data.len() < 2 {
-            return None;
-        }
-        
-        let room_len = data[0] as usize;
-        if data.len() < 1 + room_len + 1 {
-            return None;
-        }
-        
-        let pass_len = data[1 + room_len] as usize;
-        if data.len() < 1 + room_len + 1 + pass_len {
-            return None;
-        }
-        
-        let encrypted_start = 1 + room_len + 1 + pass_len;
-        let encrypted = &data[encrypted_start..];
-        
-        crypto::decrypt(encrypted, &self.password)
-    }
-
-    // Minecraft→TCP (从Minecraft转发到中继)
-    fn mc_to_tcp_relay(mc_stream: Arc<Mutex<TcpStream>>, relay_stream: Arc<Mutex<TcpStream>>, running: Arc<Mutex<bool>>, room: String, password: String, log_callback: Arc<Mutex<Option<Box<dyn Fn(String) + Send>>>>) {
-        let mut buf = [0u8; 4096];
-        let mut packet_count: u64 = 0;
-        let mut total_bytes: u64 = 0;
-        let mut last_log = std::time::Instant::now();
-        
-        while *running.lock().unwrap() {
-            match mc_stream.lock().unwrap().read(&mut buf) {
-                Ok(0) => {
-                    let msg = format!("[连接] Minecraft连接关闭，共发送 {} 个数据包，{} bytes", packet_count, total_bytes);
-                    println!("{}", msg);
-                    if let Some(ref callback) = *log_callback.lock().unwrap() {
-                        callback(msg);
-                    }
-                    break;
-                }
-                Ok(n) => {
-                    packet_count += 1;
-                    total_bytes += n as u64;
-                    
-                    // 每5秒或每100个包输出一次统计
-                    if packet_count.is_multiple_of(100) || last_log.elapsed().as_secs() >= 5 {
-                        let msg = format!("[统计] MC→中继: {} 包, {} bytes (当前 {} bytes)", packet_count, total_bytes, n);
-                        println!("{}", msg);
-                        if let Some(ref callback) = *log_callback.lock().unwrap() {
-                            callback(msg);
-                        }
-                        last_log = std::time::Instant::now();
-                    }
-                    
-                    let mut payload = Vec::with_capacity(4 + n);
-                    payload.extend_from_slice(b"DATA");
-                    payload.extend_from_slice(&buf[..n]);
-                    
-                    let packet = Self::pack_packet_static(&room, &password, &payload);
-                    if write_packet(&mut relay_stream.lock().unwrap(), &packet).is_ok() {
-                        // 发送成功
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                    thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => {
-                    let msg = format!("[错误] 读取Minecraft数据失败: {}", e);
-                    println!("{}", msg);
-                    if let Some(ref callback) = *log_callback.lock().unwrap() {
-                        callback(msg);
-                    }
-                    break;
-                }
+    fn tcp_to_mc_relay(relay_stream: Arc<Mutex<TcpStream>>, mc_stream: Arc<Mutex<Option<TcpStream>>>, mc_connected: Arc<AtomicBool>, stop_signal: Arc<AtomicBool>, game_port: u16, _room: String, password: String, log_callback: Arc<Mutex<Option<Box<dyn Fn(String) + Send>>>>, test_callback: Arc<Mutex<Option<Box<dyn Fn() + Send>>>>) {
+        let log = |msg: String| {
+            println!("{}", msg);
+            if let Some(ref callback) = *log_callback.lock().unwrap() {
+                callback(msg);
             }
-        }
-    }
+        };
 
-    // TCP→Minecraft (从中继接收转发给Minecraft)
-    fn tcp_to_mc_relay(relay_stream: Arc<Mutex<TcpStream>>, mc_stream: Arc<Mutex<TcpStream>>, running: Arc<Mutex<bool>>, _room: String, password: String, log_callback: Arc<Mutex<Option<Box<dyn Fn(String) + Send>>>>, test_callback: Arc<Mutex<Option<Box<dyn Fn() + Send>>>>) {
-        let mut packet_count: u64 = 0;
-        let mut total_bytes: u64 = 0;
-        let mut last_log = std::time::Instant::now();
+        let mut connected = false;
 
-        while *running.lock().unwrap() {
-            match read_packet(&mut relay_stream.lock().unwrap()) {
-                Ok(packet) => {
-                    if !packet.is_empty() && packet[0] == 0x41 {
-                        if let Some(ref callback) = *test_callback.lock().unwrap() {
-                            callback();
-                        }
+        while !stop_signal.load(Ordering::Relaxed) {
+            let packet = {
+                let mut relay = match relay_stream.lock() {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+                match protocol::read_packet(&mut relay) {
+                    Ok(p) => p,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
                         continue;
                     }
-                    
-                    if let Some(decrypted) = Self::try_decrypt_response_static(&packet, &password) {
-                        if decrypted.len() >= 4 && &decrypted[0..4] == b"DATA" {
-                            let data = &decrypted[4..];
-                            packet_count += 1;
-                            total_bytes += data.len() as u64;
-                            
-                            // 每5秒或每100个包输出一次统计
-                            if packet_count.is_multiple_of(100) || last_log.elapsed().as_secs() >= 5 {
-                                let msg = format!("[统计] 中继→MC: {} 包, {} bytes (当前 {} bytes)", packet_count, total_bytes, data.len());
-                                println!("{}", msg);
-                                if let Some(ref callback) = *log_callback.lock().unwrap() {
-                                    callback(msg);
-                                }
-                                last_log = std::time::Instant::now();
-                            }
-                            
-                            if mc_stream.lock().unwrap().write(data).is_ok() {
-                                // 转发成功
-                            }
+                    Err(_) => break,
+                }
+            };
+
+            if !packet.is_empty() && packet[0] == 0x41 {
+                if let Some(ref callback) = *test_callback.lock().unwrap() {
+                    callback();
+                }
+                continue;
+            }
+
+            let decrypted = match protocol::try_decrypt_response(&packet, &password) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            if decrypted.len() < 4 || &decrypted[0..4] != b"DATA" {
+                continue;
+            }
+            let data = &decrypted[4..];
+
+            if !connected {
+                let mc_addr = format!("127.0.0.1:{}", game_port);
+                log(format!("[启动] 连接到Minecraft: {}", mc_addr));
+                match TcpStream::connect(&mc_addr) {
+                    Ok(mut stream) => {
+                        stream.set_nodelay(true).ok();
+                        stream.set_read_timeout(Some(Duration::from_millis(50))).ok();
+                        log("[启动] 已连接到Minecraft服务器".to_string());
+                        if stream.write(data).is_err() {
+                            log("[错误] 写入Minecraft失败".to_string());
+                            break;
                         }
+                        stream.flush().ok();
+                        mc_stream.lock().unwrap().replace(stream);
+                        mc_connected.store(true, Ordering::SeqCst);
+                        connected = true;
+                    }
+                    Err(e) => {
+                        log(format!("[错误] 连接Minecraft失败: {}", e));
+                        break;
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                    thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+
+            let mc_write_ok = {
+                let guard = mc_stream.lock().unwrap();
+                match guard.as_ref() {
+                    Some(mc) => match mc.try_clone() {
+                        Ok(mut mc_clone) => {
+                            mc_clone.set_nodelay(true).ok();
+                            mc_clone.write_all(data).is_ok() && mc_clone.flush().is_ok()
+                        }
+                        Err(_) => false,
+                    },
+                    None => false,
                 }
-                Err(_) => break,
+            };
+
+            if !mc_write_ok {
+                break;
             }
         }
-        
-        let msg = format!("[统计] 中继→MC 结束: {} 包, {} bytes", packet_count, total_bytes);
-        println!("{}", msg);
-        if let Some(ref callback) = *log_callback.lock().unwrap() {
-            callback(msg);
-        }
-    }
 
-    fn pack_packet_static(room: &str, password: &str, data: &[u8]) -> Vec<u8> {
-        let encrypted = crypto::encrypt(data, password);
-        
-        let mut packet = Vec::new();
-        packet.push(room.len() as u8);
-        packet.extend_from_slice(room.as_bytes());
-        packet.push(password.len() as u8);
-        packet.extend_from_slice(password.as_bytes());
-        packet.extend_from_slice(&encrypted);
-        
-        packet
-    }
-
-    fn try_decrypt_response_static(data: &[u8], password: &str) -> Option<Vec<u8>> {
-        if data.len() < 2 {
-            return None;
+        if let Some(stream) = mc_stream.lock().unwrap().take() {
+            let _ = stream.shutdown(Shutdown::Both);
         }
-        
-        let room_len = data[0] as usize;
-        if data.len() < 1 + room_len + 1 {
-            return None;
-        }
-        
-        let pass_len = data[1 + room_len] as usize;
-        if data.len() < 1 + room_len + 1 + pass_len {
-            return None;
-        }
-        
-        let encrypted_start = 1 + room_len + 1 + pass_len;
-        let encrypted = &data[encrypted_start..];
-        
-        crypto::decrypt(encrypted, password)
-    }
-
-    fn extract_tag(s: &str, start: &str, end: &str) -> String {
-        if let Some(start_pos) = s.find(start) {
-            if let Some(end_pos) = s.find(end) {
-                return s[start_pos + start.len()..end_pos].to_string();
-            }
-        }
-        String::new()
+        mc_connected.store(false, Ordering::SeqCst);
     }
 
     #[allow(dead_code)]
     pub fn send_test_packet(&self) {
         if let Some(ref stream) = self.relay_stream {
-            let test_data = b"TEST_PACKET";
-            let encrypted = crypto::encrypt(test_data, &self.password);
-            
-            let mut packet = vec![0x41];
-            let room_name = self.room.as_bytes();
-            packet.push(room_name.len() as u8);
-            packet.extend_from_slice(room_name);
-            let pass = self.password.as_bytes();
-            packet.push(pass.len() as u8);
-            packet.extend_from_slice(pass);
-            packet.extend_from_slice(&encrypted);
-            
+            let packet = protocol::relay_test_packet(&self.room, &self.password);
             let mut stream = stream.lock().unwrap();
-            let _ = write_packet(&mut stream, &packet);
+            let _ = protocol::write_packet(&mut stream, &packet);
             println!("[测试] 已发送测试数据包");
         }
     }

@@ -1,7 +1,7 @@
 {
   "name": "mc-link",
   "private": true,
-  "version": "0.2.8",
+  "version": "0.2.16",
   "type": "module",
   "author": "棱镜Prism工作室",
   "description": "MC Link - 我的世界联机工具",
@@ -10,7 +10,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:release": "vue-tsc --noEmit && vite build && pnpm tauri build && node rename-build.js"
+    "build:release": "pnpm tauri build --ci && node rename-build.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

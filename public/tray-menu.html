@@ -5,14 +5,37 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { user-select: none; overflow: hidden; }
-:root { --bg: #1e1e2e; --text: rgba(255,255,255,0.9); --hover: rgba(255,255,255,0.08); }
-@media (prefers-color-scheme: light) {
-  :root { --bg: #f0f0f0; --text: rgba(0,0,0,0.85); --hover: rgba(0,0,0,0.06); }
+body { user-select: none; overflow: hidden; background: transparent; }
+:root { --bg: rgba(30, 30, 46, 0.85); --text: rgba(255,255,255,0.9); }
+@media (prefers-color-scheme: dark) {
+  :root { --hover: rgba(255,255,255,0.10); }
 }
-.menu { background: var(--bg); padding: 4px 0; min-width: 170px; }
+@media (prefers-color-scheme: light) {
+  :root { --bg: rgba(240, 242, 245, 0.85); --text: rgba(0,0,0,0.85); --hover: rgba(0,0,0,0.07); }
+}
+.menu {
+  background: var(--bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  padding: 4px 0;
+  min-width: 170px;
+  border-radius: 4px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .menu {
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 4px 16px rgba(0,0,0,0.3);
+  }
+}
+
+@media (prefers-color-scheme: light) {
+  .menu {
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.08);
+  }
+}
+
 .item {
-  width: 100%; border: none; background: transparent;
+  width: 100%; border: none; background: var(--bg);
   color: var(--text); padding: 6px 12px;
   font-size: 13px; display: flex; align-items: center; gap: 8px;
   cursor: pointer;
@@ -23,7 +46,7 @@ body { user-select: none; overflow: hidden; }
 </style>
 </head>
 <body>
-<div id="menu">
+<div id="menu" class="menu">
   <button id="openBtn" class="item">
     <img src="mc-link-icon.png" class="icon" alt="">
     打开 MC Link
@@ -48,6 +71,9 @@ const invoke = window.__TAURI_INTERNALS__.invoke;
 invoke('get_latency').then(ms => {
   const btn = document.getElementById('stopBtn');
   if (ms > 0) btn.style.display = 'flex';
+}).finally(() => {
+  const height = document.getElementById('menu').offsetHeight;
+  invoke('set_tray_size', { width: 180, height });
 });
 
 document.getElementById('openBtn').addEventListener('click', () => {

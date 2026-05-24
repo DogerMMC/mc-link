@@ -1,17 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { ref } from "vue";
 import { getCurrentWindow } from '@tauri-apps/api/window';
-
-const currentMode = ref<"none" | "running">("none");
-const logs = ref<string[]>([]);
-let unlistenLog: UnlistenFn | null = null;
-let unlistenLatency: UnlistenFn | null = null;
-const latencyMs = ref(0);
-const roomName = ref("");
-const roomPassword = ref("");
-const isConnecting = ref(false);
+import { invoke } from "@tauri-apps/api/core";
+import IconSidebar from './components/IconSidebar.vue';
+import ConnectPage from './components/ConnectPage.vue';
+import RelayPage from './components/RelayPage.vue';
 
 interface Toast {
   id: number;
@@ -21,6 +14,17 @@ interface Toast {
 
 const toasts = ref<Toast[]>([]);
 let toastId = 0;
+
+const activeIcon = ref("connect");
+
+const iconItems = [
+  { id: "connect", icon: "bi-wifi", title: "联机" },
+  { id: "relay", icon: "bi-hdd-network", title: "中继" },
+];
+
+function handleIconChange(icon: string) {
+  activeIcon.value = icon;
+}
 
 function showToast(msg: string) {
   const isError = msg.includes('错误') || msg.includes('失败');
@@ -39,29 +43,6 @@ function removeToast(id: number) {
     toasts.value.splice(index, 1);
   }
 }
-
-onMounted(async () => {
-  unlistenLog = await listen<string>("app-log", (event) => {
-    logs.value.push(event.payload);
-    if (logs.value.length > 200) logs.value.shift();
-  });
-
-  unlistenLatency = await listen<number>("latency-update", (event) => {
-    latencyMs.value = event.payload;
-  });
-
-  const appWindow = getCurrentWindow();
-  appWindow.onCloseRequested(async (event) => {
-    event.preventDefault();
-    await invoke("close_window");
-    showToast("已最小化到系统托盘");
-  });
-});
-
-onUnmounted(() => {
-  if (unlistenLog) unlistenLog();
-  if (unlistenLatency) unlistenLatency();
-});
 
 async function handleMinimize() {
   try {
@@ -87,83 +68,11 @@ async function handleMaximize() {
 
 async function handleClose() {
   await invoke("close_window");
-  showToast("已最小化到系统托盘");
-}
-
-async function startOnline() {
-  if (!roomName.value || !roomPassword.value) {
-    showToast("请填写房间名和密码");
-    return;
-  }
-
-  if (currentMode.value === "running" || isConnecting.value) {
-    showToast("联机功能已在运行中");
-    return;
-  }
-
-  isConnecting.value = true;
-  currentMode.value = "running";
-  toasts.value = [];
-  logs.value = [];
-  latencyMs.value = 0;
-
-  try {
-    const result = await invoke("start_online", {
-      roomName: roomName.value,
-      password: roomPassword.value
-    });
-    showToast(result as string);
-  } catch (e: any) {
-    showToast(e.toString());
-    currentMode.value = "none";
-  } finally {
-    isConnecting.value = false;
-  }
-}
-
-async function stopOnline() {
-  try {
-    await invoke("stop_online");
-    showToast("联机已停止");
-    currentMode.value = "none";
-    isConnecting.value = false;
-    logs.value = [];
-    latencyMs.value = 0;
-  } catch (e) {
-    showToast("停止失败: " + e);
-  }
-}
-
-async function copyLogs() {
-  if (logs.value.length === 0) {
-    showToast("没有日志可复制");
-    return;
-  }
-  try {
-    await navigator.clipboard.writeText(logs.value.join("\n"));
-    showToast("日志已复制到剪贴板");
-  } catch (e) {
-    showToast("复制失败: " + e);
-  }
-}
-
-function latencyColor(ms: number): string {
-  if (ms === 0) return 'var(--text-muted)';
-  if (ms <= 50) return '#22c55e';
-  if (ms <= 100) return '#eab308';
-  if (ms <= 200) return '#f97316';
-  return '#ef4444';
-}
-
-function latencyLabel(ms: number): string {
-  if (ms === 0) return '-- ms';
-  if (ms >= 999) return '超时';
-  return `${ms} ms`;
 }
 </script>
 
 <template>
-  <div class="main-container">
+  <div class="window-wrapper">
     <div class="titlebar" data-tauri-drag-region>
       <div class="titlebar-drag-region">
         MC Link
@@ -179,58 +88,23 @@ function latencyLabel(ms: number): string {
             <rect x="2" y="2" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
           </svg>
         </button>
-        <button class="win-btn win-btn-close" @click="handleClose" title="关闭到托盘">
+        <button class="win-btn win-btn-close" @click="handleClose" title="关闭">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
             <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
           </svg>
         </button>
       </div>
     </div>
-
-    <div class="content">
-      <div class="page">
-        <h1 class="page-title">Minecraft 联机</h1>
-
-        <div v-if="currentMode === 'none'" class="form">
-          <div class="input-group">
-            <label>房间名</label>
-            <input type="text" v-model="roomName" placeholder="输入房间名" />
-          </div>
-          <div class="input-group">
-            <label>密码</label>
-            <input type="password" v-model="roomPassword" placeholder="输入密码" />
-          </div>
-          <div class="hint">
-            房主：请先在Minecraft中开启局域网联机，然后创建房间<br>
-            成员：输入房间名和密码加入即可加入
-          </div>
-          <button class="btn btn-primary" @click="startOnline" :disabled="isConnecting">
-            {{ isConnecting ? '连接中...' : '开始联机' }}
-          </button>
-        </div>
-
-        <div v-else class="connected">
-          <div class="info-card">
-            <p><strong>房间:</strong> {{ roomName }}</p>
-            <p><strong>状态:</strong> 联机中</p>
-            <p class="latency-row">
-              <strong>延迟:</strong>
-              <span class="latency-value" :style="{ color: latencyColor(latencyMs) }">
-                {{ latencyLabel(latencyMs) }}
-              </span>
-            </p>
-          </div>
-          <button class="btn btn-danger" @click="stopOnline">停止联机</button>
-        </div>
-
-        <div v-show="logs.length > 0" class="console">
-          <div class="console-header">
-            <h3>运行日志</h3>
-            <button class="copy-btn" @click="copyLogs">复制日志</button>
-          </div>
-          <div class="logs">
-            <div v-for="(log, i) in logs" :key="i" class="log-line">{{ log }}</div>
-          </div>
+    <div class="window-container">
+      <div class="content">
+        <IconSidebar
+          :active-icon="activeIcon"
+          :icon-items="iconItems"
+          @icon-change="handleIconChange"
+        />
+        <div class="page">
+          <ConnectPage v-show="activeIcon === 'connect'" :show-toast="showToast" />
+          <RelayPage v-show="activeIcon === 'relay'" :show-toast="showToast" />
         </div>
       </div>
     </div>
@@ -252,7 +126,6 @@ function latencyLabel(ms: number): string {
 
 <style>
 @import "tailwindcss";
-@import "bootstrap-icons/font/bootstrap-icons.css";
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
 
 :root {
@@ -261,16 +134,17 @@ function latencyLabel(ms: number): string {
   --bg-tertiary: #31314a;
   --bg-card: rgba(40, 40, 62);
   --bg-hover: rgba(255, 255, 255, 0.08);
+  --bg-window: #222222;
   --text-primary: #ffffff;
   --text-secondary: #e0e0e0;
   --text-muted: #a0a0b0;
   --font-english: 'Poppins', sans-serif;
-  --accent-primary: #818cf8;
-  --accent-secondary: #6366f1;
-  --accent-hover: #a5b4fc;
+  --accent-primary: #0066cc;
+  --accent-secondary: #0052a3;
+  --accent-hover: #1a7ae6;
   --border-color: rgba(255, 255, 255, 0.08);
   --border-hover: rgba(255, 255, 255, 0.15);
-  --shadow-accent: rgba(129, 140, 248, 0.2);
+  --shadow-accent: rgba(0, 102, 204, 0.25);
 }
 
 @media (prefers-color-scheme: light) {
@@ -280,15 +154,17 @@ function latencyLabel(ms: number): string {
     --bg-tertiary: #FFFFFF;
     --bg-card: #FFFFFF;
     --bg-hover: rgba(0, 0, 0, 0.05);
+    --bg-window: #f5f5f5;
     --text-primary: #2c3e50;
     --text-secondary: #5a6c7d;
     --text-muted: #8b9bb0;
-    --accent-primary: #1890FF;
-    --accent-secondary: #096DD9;
-    --accent-hover: #40A9FF;
+    --font-english: 'Poppins', sans-serif;
+    --accent-primary: #0099ff;
+    --accent-secondary: #0077cc;
+    --accent-hover: #33adff;
     --border-color: #e8e8e8;
     --border-hover: #d0d0d0;
-    --shadow-accent: rgba(24, 144, 255, 0.12);
+    --shadow-accent: rgba(0, 153, 255, 0.15);
   }
 }
 
@@ -307,13 +183,44 @@ body {
   -webkit-user-select: none;
 }
 
-.main-container {
+.window-wrapper {
   width: 100vw;
   height: 100vh;
+  background: transparent;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: transparent;
+  position: relative;
+}
+
+.window-wrapper::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 0;
+}
+
+@media (prefers-color-scheme: light) {
+  .window-wrapper::before {
+    background: transparent;
+  }
+}
+
+.window-wrapper > * {
+  position: relative;
+  z-index: 1;
+}
+
+.window-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 8px;
+  margin: 0 5px 5px 5px;
+  background: var(--bg-window);
 }
 
 .titlebar {
@@ -383,21 +290,14 @@ body {
 }
 
 .page {
+  flex: 1;
   padding: 30px;
   overflow-y: auto;
-  height: 100%;
   box-sizing: border-box;
 }
 
-.page-title {
-  margin: 0 0 30px;
-  color: var(--text-primary);
-  font-size: 24px;
-  font-weight: 600;
-}
-
-.form, .connected {
-  max-width: 400px;
+.text-muted {
+  color: var(--text-muted);
 }
 
 .input-group {
@@ -473,12 +373,11 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 .btn-primary {
   background: var(--accent-primary);
   color: #ffffff;
-  box-shadow: 0 2px 8px rgba(129, 140, 248, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 102, 204, 0.3);
 }
 
 .btn-primary:hover {
-  filter: brightness(1.1);
-  box-shadow: 0 4px 12px rgba(129, 140, 248, 0.4);
+  background: var(--accent-hover);
 }
 
 .btn-danger {
@@ -488,111 +387,29 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
 .btn-danger:hover {
-  filter: brightness(1.1);
-  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
-}
-
-.info-card {
-  background: var(--bg-card);
-  padding: 20px;
-  border-radius: 12px;
-  margin-bottom: 20px;
-  border: 1px solid var(--border-color);
-}
-
-.info-card p {
-  margin: 10px 0;
-  color: var(--text-secondary);
-}
-
-.info-card strong {
-  color: var(--text-primary);
-}
-
-.latency-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.latency-value {
-  font-weight: 600;
-  font-size: 14px;
-  font-family: 'Consolas', monospace;
-  transition: color 0.3s ease;
-}
-
-.console {
-  margin-top: 30px;
-  background: var(--bg-secondary);
-  border-radius: 12px;
-  overflow: hidden;
-  border: 1px solid var(--border-color);
-}
-
-.console-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 15px;
-  background: var(--bg-tertiary);
-}
-
-.console-header h3 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.copy-btn {
-  background: var(--accent-primary);
-  color: white;
-  border: none;
-  padding: 5px 12px;
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.copy-btn:hover {
-  filter: brightness(1.1);
-}
-
-.log-line {
-  color: var(--text-secondary);
-  padding: 2px 0;
-  border-bottom: 1px solid var(--border-color);
-  user-select: text;
-}
-
-.logs {
-  height: 250px;
-  overflow-y: auto;
-  padding: 10px;
-  font-family: 'Consolas', monospace;
-  font-size: 12px;
+  background: #f87171;
 }
 
 .toast-container {
   position: fixed;
-  bottom: 30px;
-  right: 30px;
+  bottom: 15px;
+  left: 15px;
   display: flex;
   flex-direction: column-reverse;
-  gap: 10px;
+  gap: 6px;
   z-index: 1000;
 }
 
 .message {
-  padding: 15px 25px;
+  padding: 8px 16px;
   background: rgba(255, 255, 255, 0.1);
   color: var(--text-primary);
-  border-radius: 8px;
+  border-radius: 6px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  max-width: 400px;
+  max-width: 360px;
   backdrop-filter: blur(10px);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .message.error {
@@ -600,35 +417,27 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
 .toast-enter-active {
-  animation: slideIn 0.3s ease-out;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .toast-leave-active {
-  animation: fadeOut 0.3s ease-out forwards;
-  z-index: 0;
+  transition: all 0.2s ease-out;
+  position: absolute;
+  right: auto;
+  bottom: auto;
 }
 
 .toast-move {
-  transition: transform 0.5s ease-in;
+  transition: transform 0.2s ease-out;
 }
 
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(50px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+.toast-enter-from {
+  opacity: 0;
+  transform: translateX(-30px);
 }
 
-@keyframes fadeOut {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-  }
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-20px) scale(0.95);
 }
 </style>

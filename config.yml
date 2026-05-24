@@ -1,4 +1,4 @@
-central_server: central-server.link.xigo.top:50248
+central_server: 127.0.0.1:8878
 relay_port: 57894
 report_address: null
 heartbeat_interval: 5
